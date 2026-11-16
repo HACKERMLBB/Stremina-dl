@@ -1,0 +1,3 @@
+python-telegram-bot==20.7
+streamlink==6.11.0
+yt-dlp==2024.10.07
