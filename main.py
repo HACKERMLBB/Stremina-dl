@@ -3,8 +3,23 @@ import subprocess
 import asyncio
 import time
 import glob
+import threading
+from flask import Flask
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
+
+# Fake server for Render Web Service port check
+app_flask = Flask(__name__)
+
+@app_flask.route('/')
+def home():
+    return "Bot is Running!"
+
+def run_flask():
+    port = int(os.environ.get("PORT", 10000))
+    app_flask.run(host="0.0.0.0", port=port)
+
+threading.Thread(target=run_flask, daemon=True).start()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHANNEL_ID = os.getenv("CHANNEL_ID")
@@ -68,29 +83,29 @@ async def record_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     platform = platform.lower().strip()
     uid = uid.strip()
     if platform not in ALLOWED:
-        await update.message.reply_text("twitch / youtube / tiktok / soop විතරයි")
+        await update.message.reply_text("Only twitch / youtube / tiktok / soop")
         return
 
-    await update.message.reply_text(f"🔍 Checking {platform}:{uid} ...")
+    await update.message.reply_text(f"Checking {platform}:{uid} ...")
     stream_url = await asyncio.to_thread(get_stream_url, platform, uid)
 
     if not stream_url:
-        await update.message.reply_text("❌ Live නෑ / Stream URL හම්බුනේ නෑ")
+        await update.message.reply_text("Live not found / Stream URL not found")
         return
 
     base_name = f"{platform}_{uid}_{int(time.time())}"
     await update.message.reply_text(
-        f"🔴 Recording Started\n"
-        f"🎬 {platform}:{uid}\n"
-        f"🎞️ 720p\n"
-        f"✂️ 5 Min Parts\n"
-        f"📂 Channel එකට එකින් එක යනවා"
+        f"Recording Started\n"
+        f"{platform}:{uid}\n"
+        f"720p\n"
+        f"5 Min Parts\n"
+        f"Sending to channel one by one"
     )
 
     parts = await asyncio.to_thread(do_record_5min, stream_url, base_name)
 
     if not parts:
-        await update.message.reply_text("❌ Record Fail")
+        await update.message.reply_text("Record Fail")
         return
 
     for i, part in enumerate(parts, 1):
@@ -107,29 +122,29 @@ async def record_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     chat_id=CHANNEL_ID,
                     document=f,
                     filename=os.path.basename(part),
-                    caption=f"🎬 {platform}:{uid}\n📂 Part {i}\n📦 {size_mb:.1f} MB\n🎞️ 720p | ✂️ 5 Min"
+                    caption=f"{platform}:{uid}\nPart {i}\n{size_mb:.1f} MB\n720p | 5 Min"
                 )
-            await update.message.reply_text(f"✅ Part {i} ගියා - {size_mb:.1f} MB")
+            await update.message.reply_text(f"Part {i} sent - {size_mb:.1f} MB")
         except Exception as e:
-            await update.message.reply_text(f"❌ Part {i} Fail: {e}")
+            await update.message.reply_text(f"Part {i} Fail: {e}")
         try: os.remove(part)
         except: pass
 
-    await update.message.reply_text("✅ All 5-Min Parts Done!")
+    await update.message.reply_text("All 5-Min Parts Done!")
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🎬 Live Recorder - 5 Min Parts\n\n"
+        "Live Recorder - 5 Min Parts\n\n"
         "/record twitch:username\n"
         "/record youtube:@channel\n"
         "/record tiktok:@user\n"
         "/record soop:id\n\n"
-        "⚠️ උඹේම / Permission තියෙන Live විතරක් Record කරන්න."
+        "Only record your own / permitted lives."
     )
 
 def main():
     if not BOT_TOKEN or not CHANNEL_ID:
-        print("❌ BOT_TOKEN / CHANNEL_ID Missing!")
+        print("BOT_TOKEN / CHANNEL_ID Missing!")
         return
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start_command))
