@@ -2,13 +2,13 @@ import os
 import subprocess
 import asyncio
 import time
+import glob
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHANNEL_ID = os.getenv("CHANNEL_ID")
 
-# උඹේම Channel / ID විතරක් මෙතන දාන්න
 ALLOWED = {
     "twitch": "https://twitch.tv/{id}",
     "youtube": "https://youtube.com/{id}/live",
@@ -18,7 +18,6 @@ ALLOWED = {
 
 def get_stream_url(platform, uid):
     url = ALLOWED[platform].format(id=uid)
-    # 1. Streamlink වලින් බලනවා
     try:
         r = subprocess.run(
             ["streamlink", url, "720p,best", "--stream-url"],
@@ -29,7 +28,6 @@ def get_stream_url(platform, uid):
     except Exception as e:
         print(f"streamlink fail: {e}")
 
-    # 2. Streamlink නැත්තම් yt-dlp වලින්
     try:
         r = subprocess.run(
             ["yt-dlp", url, "-f", "best[height<=720]/best", "-g"],
@@ -41,8 +39,21 @@ def get_stream_url(platform, uid):
         print(f"yt-dlp fail: {e}")
     return None
 
+def do_record_5min(stream_url, base_name):
+    pattern = f"{base_name}_part%03d.mp4"
+    try:
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", stream_url, "-c", "copy",
+             "-f", "segment", "-segment_time", "300",
+             "-reset_timestamps", "1", pattern],
+            timeout=3600, capture_output=True
+        )
+    except Exception as e:
+        print(f"ffmpeg error: {e}")
+    return sorted(glob.glob(f"{base_name}_part*.mp4"))
+
 async def record_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if len(context.args) < 2:
+    if len(context.args) < 1:
         await update.message.reply_text(
             "Usage:\n/record twitch:shroud\n/record youtube:@channel\n/record tiktok:@user\n/record soop:seoeun3104"
         )
@@ -54,55 +65,76 @@ async def record_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     platform, uid = raw.split(":", 1)
-    platform = platform.lower()
+    platform = platform.lower().strip()
+    uid = uid.strip()
     if platform not in ALLOWED:
         await update.message.reply_text("twitch / youtube / tiktok / soop විතරයි")
         return
 
     await update.message.reply_text(f"🔍 Checking {platform}:{uid} ...")
-    stream_url = get_stream_url(platform, uid)
+    stream_url = await asyncio.to_thread(get_stream_url, platform, uid)
 
     if not stream_url:
         await update.message.reply_text("❌ Live නෑ / Stream URL හම්බුනේ නෑ")
         return
 
-    filename = f"{platform}_{uid}_{int(time.time())}.mp4"
-    await update.message.reply_text(f"🔴 Recording Started\n📂 {filename}\n🎞️ 720p")
+    base_name = f"{platform}_{uid}_{int(time.time())}"
+    await update.message.reply_text(
+        f"🔴 Recording Started\n"
+        f"🎬 {platform}:{uid}\n"
+        f"🎞️ 720p\n"
+        f"✂️ 5 Min Parts\n"
+        f"📂 Channel එකට එකින් එක යනවා"
+    )
 
-    # Render එකේ තාවකාලිකව Record වෙනවා
-    # 10 Min = 600 sec, ඊට පස්සේ නවතිනවා
-    try:
-        subprocess.run(
-            ["ffmpeg", "-y", "-i", stream_url, "-c", "copy", "-t", "600", filename],
-            timeout=650
-        )
-    except Exception as e:
-        print(f"ffmpeg error: {e}")
+    parts = await asyncio.to_thread(do_record_5min, stream_url, base_name)
 
-    if os.path.exists(filename):
-        size_mb = os.path.getsize(filename) / 1024 / 1024
-        # Bot API Limit එක 50MB, ඒකට වඩා ලොකු නම් Telegram එකට යවන්න බෑ
-        if size_mb < 48:
-            await update.message.reply_text(f"✅ Done - {size_mb:.1f} MB, Uploading...")
-            with open(filename, "rb") as f:
-                await update.message.reply_document(CHANNEL_ID, document=f, caption=f"🎬 {platform}:{uid}\n📦 {size_mb:.1f} MB")
-        else:
-            await update.message.reply_text(f"⚠️ File එක {size_mb:.1f} MB - 50MB ට වඩා වැඩියි, Telegram Bot එකෙන් යවන්න බෑ. Render එකෙන් Download කරගන්න.")
-        try:
-            os.remove(filename)
-        except:
-            pass
-    else:
+    if not parts:
         await update.message.reply_text("❌ Record Fail")
+        return
+
+    for i, part in enumerate(parts, 1):
+        if not os.path.exists(part):
+            continue
+        size_mb = os.path.getsize(part) / 1024 / 1024
+        if size_mb < 1:
+            try: os.remove(part)
+            except: pass
+            continue
+        try:
+            with open(part, "rb") as f:
+                await context.bot.send_document(
+                    chat_id=CHANNEL_ID,
+                    document=f,
+                    filename=os.path.basename(part),
+                    caption=f"🎬 {platform}:{uid}\n📂 Part {i}\n📦 {size_mb:.1f} MB\n🎞️ 720p | ✂️ 5 Min"
+                )
+            await update.message.reply_text(f"✅ Part {i} ගියා - {size_mb:.1f} MB")
+        except Exception as e:
+            await update.message.reply_text(f"❌ Part {i} Fail: {e}")
+        try: os.remove(part)
+        except: pass
+
+    await update.message.reply_text("✅ All 5-Min Parts Done!")
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🎬 Live Recorder\n\n/record twitch:username\n/record youtube:@channel\n/record tiktok:@user\n/record soop:id\n\n⚠️ උඹේම / Permission තියෙන Live විතරක් Record කරන්න.")
+    await update.message.reply_text(
+        "🎬 Live Recorder - 5 Min Parts\n\n"
+        "/record twitch:username\n"
+        "/record youtube:@channel\n"
+        "/record tiktok:@user\n"
+        "/record soop:id\n\n"
+        "⚠️ උඹේම / Permission තියෙන Live විතරක් Record කරන්න."
+    )
 
 def main():
+    if not BOT_TOKEN or not CHANNEL_ID:
+        print("❌ BOT_TOKEN / CHANNEL_ID Missing!")
+        return
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("record", record_command))
-    print("Bot Running on Render...")
+    print("Bot Running on Render - 5 Min Mode...")
     app.run_polling()
 
 if __name__ == "__main__":
